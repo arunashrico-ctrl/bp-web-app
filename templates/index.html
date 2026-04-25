@@ -316,31 +316,53 @@ function redrawCanvas(){
 }
 
 // ===== PREDICT =====
-document.getElementById("predictBtn").onclick = function(){
+document.getElementById("predictBtn").onclick = function () {
 
-    if(!cheek_roi || !palm_roi){
-        alert("Select both ROIs");
+    if (!recordedBlob) {
+        alert("Please record video first");
+        return;
+    }
+
+    if (!cheek_roi || !palm_roi) {
+        alert("Select both ROIs (cheek + palm)");
         return;
     }
 
     let formData = new FormData();
-    formData.append("video", recordedBlob);
+
+    // IMPORTANT: add filename
+    formData.append("video", recordedBlob, "video.webm");
+
     formData.append("cheek_roi", JSON.stringify(cheek_roi));
     formData.append("palm_roi", JSON.stringify(palm_roi));
 
-    fetch('/upload', { method: 'POST', body: formData })
-    .then(res => res.json())
+    // DEBUG
+    console.log("Sending request to backend...");
+
+    fetch("/upload", {
+        method: "POST",
+        body: formData
+    })
+    .then(res => {
+        if (!res.ok) {
+            throw new Error("Server error: " + res.status);
+        }
+        return res.json();
+    })
     .then(data => {
 
+        console.log("Response:", data);
+
         document.getElementById("result").innerHTML =
-        "👤 " + patientName + "<br>" +
-        "🎂 Age: " + patientAge + "<br>" +
-        "⚧ " + patientGender + "<br>" +
-        "📏 " + patientHeight + " cm<br>" +
-        "⚖ " + patientWeight + " kg<br><br>" +
-        "🩺 SYS: " + Number(data.sys).toFixed(0) + " mmHg<br>" +
-        "🩺 DYS: " + Number(data.dys).toFixed(0) + " mmHg<br>" +
-        "💓 HR: " + Number(data.hr).toFixed(0) + " bpm";
+            "👤 " + patientName + "<br>" +
+            "🩺 SYS: " + data.sys + " mmHg<br>" +
+            "🩺 DYS: " + data.dys + " mmHg<br>" +
+            "💓 HR: " + data.hr + " bpm<br>" +
+            "⏱ PTT: " + data.ptt;
+    })
+    .catch(err => {
+        console.log("ERROR:", err);
+        alert("Prediction failed. Check backend.");
     });
 };
 
