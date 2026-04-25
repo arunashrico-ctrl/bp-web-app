@@ -1,0 +1,380 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>Vision-Based BP Monitoring System</title>
+
+<style>
+body {
+    font-family: Arial;
+    background: linear-gradient(135deg, #667eea, #764ba2);
+    text-align: center;
+    color: white;
+}
+
+.container {
+    background: rgba(255,255,255,0.1);
+    padding: 25px;
+    border-radius: 15px;
+    display: inline-block;
+    margin-top: 20px;
+}
+
+input, select {
+    padding: 10px;
+    margin: 10px;
+    border-radius: 8px;
+    border: none;
+    width: 200px;
+}
+
+button {
+    padding: 10px 20px;
+    margin: 10px;
+    border-radius: 25px;
+    border: none;
+    font-weight: bold;
+    cursor: pointer;
+}
+
+#startBtn { background: #00c853; color: white; }
+#cheekBtn { background: #2979ff; color: white; }
+#palmBtn { background: #ff6d00; color: white; }
+#predictBtn { background: #d500f9; color: white; }
+#resetBtn { background: #ff1744; color: white; }
+
+canvas {
+    border-radius: 10px;
+    border: 2px solid white;
+}
+
+.hidden {
+    display: none;
+}
+
+#result {
+    margin-top: 20px;
+    background: rgba(0,0,0,0.3);
+    padding: 15px;
+    border-radius: 10px;
+}
+</style>
+</head>
+
+<body>
+
+<h1>💓 Vision-Based BP Monitoring System</h1>
+<p>Adjust face 🙂 and palm ✋ → Start Recording</p>
+
+<!-- LOGIN -->
+<div class="container" id="loginBox">
+<h3>👤 Patient Details</h3>
+
+<input id="name" placeholder="Name"><br>
+<input id="age" type="number" placeholder="Age"><br>
+
+<select id="gender">
+<option value="none">Select Gender</option>
+<option value="Male">Male</option>
+<option value="Female">Female</option>
+</select><br>
+
+<input id="height" type="number" placeholder="Height (cm)"><br>
+<input id="weight" type="number" placeholder="Weight (kg)"><br>
+
+<button onclick="startSession()">Start Session</button>
+</div>
+
+<!-- APP -->
+<div class="container hidden" id="appBox">
+
+<p id="guide">📌 Adjust face & palm → then start recording</p>
+<p id="timer">Time: 0 sec</p>
+
+<canvas id="canvas" width="500" height="350"></canvas>
+
+<br>
+
+<button id="startBtn">🎥 Start Recording</button><br>
+<button id="cheekBtn">🙂 Cheek ROI</button>
+<button id="palmBtn">✋ Palm ROI</button><br>
+<button id="predictBtn">📊 Predict BP</button><br>
+<button id="resetBtn">🔄 New Patient</button>
+
+<p id="result"></p>
+
+</div>
+
+<script>
+
+// ===== GLOBAL VARIABLES =====
+let video = document.createElement("video");
+let stream = null;
+
+let mediaRecorder = null;
+let chunks = [];
+let recordedBlob = null;
+
+let frozenImage = null;
+let previewInterval = null;
+
+let recording = false;
+
+let mode = null;
+let cheek_roi = null;
+let palm_roi = null;
+
+let isDrawing = false;
+let startX = 0, startY = 0, currentX = 0, currentY = 0;
+
+let patientName, patientAge, patientGender, patientHeight, patientWeight;
+
+const canvas = document.getElementById("canvas");
+const ctx = canvas.getContext("2d");
+
+// ===== LOGIN =====
+function startSession(){
+
+    const nameVal = document.getElementById("name").value.trim();
+    const ageVal = document.getElementById("age").value.trim();
+    const genderVal = document.getElementById("gender").value;
+    const heightVal = document.getElementById("height").value.trim();
+    const weightVal = document.getElementById("weight").value.trim();
+
+    if(nameVal === "" || ageVal === "" || genderVal === "none" || heightVal === "" || weightVal === ""){
+        alert("Please fill all details");
+        return;
+    }
+
+    patientName = nameVal;
+    patientAge = ageVal;
+    patientGender = genderVal;
+    patientHeight = heightVal;
+    patientWeight = weightVal;
+
+    document.getElementById("loginBox").classList.add("hidden");
+    document.getElementById("appBox").classList.remove("hidden");
+
+    startCameraPreview();
+}
+
+// ===== CAMERA PREVIEW =====
+function startCameraPreview(){
+
+    if(previewInterval){
+        clearInterval(previewInterval);
+    }
+
+    navigator.mediaDevices.getUserMedia({ video: true })
+    .then(s => {
+
+        stream = s;
+        video.srcObject = stream;
+        video.play();
+
+        previewInterval = setInterval(() => {
+            if(video.readyState === 4 && frozenImage === null){
+                ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+            }
+        }, 30);
+
+    })
+    .catch(() => alert("Camera error"));
+}
+
+// ===== RECORDING =====
+document.getElementById("startBtn").onclick = function(){
+
+    if(!stream){
+        alert("Camera not started");
+        return;
+    }
+
+    // RESET for new recording
+    frozenImage = null;
+    cheek_roi = null;
+    palm_roi = null;
+    mode = null;
+    chunks = [];
+    recording = true;
+
+    document.getElementById("result").innerHTML = "";
+    document.getElementById("guide").innerText = "⏺ Recording...";
+
+    mediaRecorder = new MediaRecorder(stream);
+
+    mediaRecorder.ondataavailable = e => chunks.push(e.data);
+
+    mediaRecorder.onstop = () => {
+
+        clearInterval(previewInterval);
+
+        recordedBlob = new Blob(chunks, { type: 'video/webm' });
+
+        let tempVideo = document.createElement("video");
+        tempVideo.src = URL.createObjectURL(recordedBlob);
+
+        tempVideo.onloadeddata = () => {
+            tempVideo.currentTime = tempVideo.duration / 2;
+        };
+
+        tempVideo.onseeked = () => {
+
+            frozenImage = document.createElement("canvas");
+            frozenImage.width = canvas.width;
+            frozenImage.height = canvas.height;
+
+            let fctx = frozenImage.getContext("2d");
+            fctx.drawImage(tempVideo, 0, 0, canvas.width, canvas.height);
+
+            ctx.drawImage(frozenImage, 0, 0);
+
+            document.getElementById("guide").innerText =
+            "✏ Draw cheek ROI, then palm ROI";
+        };
+    };
+
+    mediaRecorder.start();
+
+    let sec = 0;
+    let timer = setInterval(() => {
+
+        sec++;
+        document.getElementById("timer").innerText = "Time: " + sec + " sec";
+
+        if(sec >= 20){
+            clearInterval(timer);
+            recording = false;
+            mediaRecorder.stop();
+        }
+
+    }, 1000);
+};
+
+// ===== ROI DRAW =====
+document.getElementById("cheekBtn").onclick = () => mode = "cheek";
+document.getElementById("palmBtn").onclick = () => mode = "palm";
+
+canvas.addEventListener("mousedown", e => {
+
+    if(!frozenImage || !mode){
+        alert("Record video and select ROI type");
+        return;
+    }
+
+    isDrawing = true;
+    startX = e.offsetX;
+    startY = e.offsetY;
+});
+
+canvas.addEventListener("mousemove", e => {
+
+    if(!isDrawing) return;
+
+    currentX = e.offsetX;
+    currentY = e.offsetY;
+
+    redrawCanvas();
+
+    ctx.strokeStyle = (mode === "cheek") ? "blue" : "green";
+    ctx.lineWidth = 3;
+
+    ctx.strokeRect(startX, startY, currentX - startX, currentY - startY);
+});
+
+canvas.addEventListener("mouseup", () => {
+
+    if(!isDrawing) return;
+
+    isDrawing = false;
+
+    let roi = {
+        x: startX,
+        y: startY,
+        w: currentX - startX,
+        h: currentY - startY
+    };
+
+    if(mode === "cheek") cheek_roi = roi;
+    if(mode === "palm") palm_roi = roi;
+
+    redrawCanvas();
+});
+
+function redrawCanvas(){
+
+    ctx.drawImage(frozenImage, 0, 0);
+
+    if(cheek_roi){
+        ctx.strokeStyle = "blue";
+        ctx.strokeRect(cheek_roi.x, cheek_roi.y, cheek_roi.w, cheek_roi.h);
+    }
+
+    if(palm_roi){
+        ctx.strokeStyle = "green";
+        ctx.strokeRect(palm_roi.x, palm_roi.y, palm_roi.w, palm_roi.h);
+    }
+}
+
+// ===== PREDICT =====
+document.getElementById("predictBtn").onclick = function(){
+
+    if(!cheek_roi || !palm_roi){
+        alert("Select both ROIs");
+        return;
+    }
+
+    let formData = new FormData();
+    formData.append("video", recordedBlob);
+    formData.append("cheek_roi", JSON.stringify(cheek_roi));
+    formData.append("palm_roi", JSON.stringify(palm_roi));
+
+    fetch('/upload', { method: 'POST', body: formData })
+    .then(res => res.json())
+    .then(data => {
+
+        document.getElementById("result").innerHTML =
+        "👤 " + patientName + "<br>" +
+        "🎂 Age: " + patientAge + "<br>" +
+        "⚧ " + patientGender + "<br>" +
+        "📏 " + patientHeight + " cm<br>" +
+        "⚖ " + patientWeight + " kg<br><br>" +
+        "🩺 SYS: " + Number(data.sys).toFixed(0) + " mmHg<br>" +
+        "🩺 DYS: " + Number(data.dys).toFixed(0) + " mmHg<br>" +
+        "💓 HR: " + Number(data.hr).toFixed(0) + " bpm";
+    });
+};
+
+// ===== RESET / NEW PATIENT =====
+document.getElementById("resetBtn").onclick = function(){
+
+    if(stream){
+        stream.getTracks().forEach(track => track.stop());
+    }
+
+    frozenImage = null;
+    cheek_roi = null;
+    palm_roi = null;
+    recordedBlob = null;
+    mode = null;
+
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    document.getElementById("result").innerHTML = "";
+    document.getElementById("timer").innerText = "Time: 0 sec";
+    document.getElementById("guide").innerText =
+    "📌 Adjust face & palm → then start recording";
+
+    document.getElementById("name").value = "";
+    document.getElementById("age").value = "";
+    document.getElementById("gender").value = "none";
+    document.getElementById("height").value = "";
+    document.getElementById("weight").value = "";
+
+    document.getElementById("appBox").classList.add("hidden");
+    document.getElementById("loginBox").classList.remove("hidden");
+};
+
+</script>
+
+</body>
+</html>
