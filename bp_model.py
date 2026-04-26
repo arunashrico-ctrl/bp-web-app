@@ -34,7 +34,6 @@ def extract_signal(frames, roi):
     signal = []
 
     for frame in frames:
-
         try:
             roi_frame = frame[y:y+h, x:x+w]
 
@@ -68,33 +67,33 @@ def predict_bp_dual_roi(video_path, cheek_roi, palm_roi):
         cap = cv2.VideoCapture(video_path)
 
         if not cap.isOpened():
-            print("Video not opened properly")
+            print("Video not opened")
             return {"sys": 120, "dys": 80, "hr": 70, "ptt": 0.2}
 
         fps = cap.get(cv2.CAP_PROP_FPS)
-
         if fps is None or fps == 0 or np.isnan(fps):
             fps = 30
 
         frames = []
+        frame_count = 0
 
-frame_count = 0
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                break
 
-while True:
-    ret, frame = cap.read()
-    if not ret:
-        break
+            # ==================================================
+            # MEMORY OPTIMIZATION (IMPORTANT FOR RENDER)
+            # ==================================================
+            if frame_count % 2 == 0:  # take every 2nd frame
+                frame = cv2.resize(frame, (400, 300))  # reduce resolution
+                frames.append(frame)
 
-    # Take every 2nd frame (balanced accuracy + memory)
-    if frame_count % 2 == 0:
-        frame = cv2.resize(frame, (400, 300))  # reduce resolution slightly
-        frames.append(frame)
-
-    frame_count += 1
+            frame_count += 1
 
         cap.release()
 
-        print("Total frames:", len(frames))
+        print("Frames collected:", len(frames))
 
         if len(frames) < 10:
             print("Too few frames")
@@ -109,8 +108,8 @@ while True:
         cheek_f = np.convolve(cheek_signal, np.ones(5)/5, mode='same')
         palm_f = np.convolve(palm_signal, np.ones(5)/5, mode='same')
 
-        cheek_f = cheek_f - np.mean(cheek_f)
-        palm_f = palm_f - np.mean(palm_f)
+        cheek_f -= np.mean(cheek_f)
+        palm_f -= np.mean(palm_f)
 
         # ==================================================
         # PTT CALCULATION
@@ -124,7 +123,7 @@ while True:
             ptt = 0.15
 
         # ==================================================
-        # HEART RATE
+        # HEART RATE ESTIMATION
         # ==================================================
         diffs = np.diff(palm_f)
 
@@ -147,16 +146,17 @@ while True:
                 sys_bp = model_sys.predict(X)[0]
                 dys_bp = model_dys.predict(X)[0]
             except Exception as e:
-                print("MODEL PRED ERROR:", str(e))
+                print("MODEL PREDICTION ERROR:", str(e))
                 sys_bp, dys_bp = 120, 80
         else:
             print("Model not loaded, using default values")
             sys_bp, dys_bp = 120, 80
 
-        # Slight variation
+        # Add slight variation
         sys_bp += np.random.uniform(-2, 2)
         dys_bp += np.random.uniform(-2, 2)
 
+        # Clamp values
         sys_bp = float(np.clip(sys_bp, 90, 160))
         dys_bp = float(np.clip(dys_bp, 60, 100))
 
