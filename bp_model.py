@@ -78,11 +78,19 @@ def predict_bp_dual_roi(video_path, cheek_roi, palm_roi):
 
         frames = []
 
-        while True:
-            ret, frame = cap.read()
-            if not ret:
-                break
-            frames.append(frame)
+frame_count = 0
+
+while True:
+    ret, frame = cap.read()
+    if not ret:
+        break
+
+    # Take every 2nd frame (balanced accuracy + memory)
+    if frame_count % 2 == 0:
+        frame = cv2.resize(frame, (400, 300))  # reduce resolution slightly
+        frames.append(frame)
+
+    frame_count += 1
 
         cap.release()
 
