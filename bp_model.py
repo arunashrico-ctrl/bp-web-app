@@ -4,29 +4,16 @@ import numpy as np
 import joblib
 
 # ==================================================
-# SAFE MODEL LOADING (RENDER SAFE)
+# MODEL LOADING
 # ==================================================
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-try:
-    model_sys_path = os.path.join(BASE_DIR, "Linear_SYS.pkl")
-    model_dys_path = os.path.join(BASE_DIR, "Linear_DYS.pkl")
-
-    print("Loading models from:", model_sys_path)
-
-    model_sys = joblib.load(model_sys_path)
-    model_dys = joblib.load(model_dys_path)
-
-    print("Models loaded successfully")
-
-except Exception as e:
-    print("MODEL LOAD ERROR:", str(e))
-    model_sys = None
-    model_dys = None
+model_sys = joblib.load(os.path.join(BASE_DIR, "Linear_SYS.pkl"))
+model_dys = joblib.load(os.path.join(BASE_DIR, "Linear_DYS.pkl"))
 
 
 # ==================================================
-# SIGNAL EXTRACTION
+# SIGNAL EXTRACTION (IMPROVED)
 # ==================================================
 def extract_signal(frames, roi):
 
@@ -38,36 +25,42 @@ def extract_signal(frames, roi):
             roi_frame = frame[y:y+h, x:x+w]
 
             if roi_frame is None or roi_frame.size == 0:
-                signal.append(0)
                 continue
 
             green = roi_frame[:, :, 1]
-            value = np.mean(green) + 0.5 * np.std(green)
+
+            # Use ONLY mean (stable and responsive)
+            value = np.mean(green)
             signal.append(value)
 
         except:
-            signal.append(0)
+            continue
 
     signal = np.array(signal)
 
-    if len(signal) == 0 or np.std(signal) == 0:
+    if len(signal) < 10:
         return signal
 
-    return (signal - np.mean(signal)) / np.std(signal)
+    # Remove DC component (important)
+    signal = signal - np.mean(signal)
+
+    # Normalize (avoid flat signal)
+    std = np.std(signal)
+    if std > 0:
+        signal = signal / std
+
+    return signal
 
 
 # ==================================================
-# MAIN PREDICTION FUNCTION
+# MAIN FUNCTION
 # ==================================================
 def predict_bp_dual_roi(video_path, cheek_roi, palm_roi):
 
     try:
-        print("Processing video:", video_path)
-
         cap = cv2.VideoCapture(video_path)
 
         if not cap.isOpened():
-            print("Video not opened")
             return {"sys": 120, "dys": 80, "hr": 70, "ptt": 0.2}
 
         fps = cap.get(cv2.CAP_PROP_FPS)
@@ -82,34 +75,32 @@ def predict_bp_dual_roi(video_path, cheek_roi, palm_roi):
             if not ret:
                 break
 
-            # ==================================================
-            # MEMORY OPTIMIZATION (IMPORTANT FOR RENDER)
-            # ==================================================
-            if frame_count % 2 == 0:  # take every 2nd frame
-                frame = cv2.resize(frame, (400, 300))  # reduce resolution
+            # Balanced optimization (no heavy loss)
+            if frame_count % 2 == 0:
+                frame = cv2.resize(frame, (480, 360))
                 frames.append(frame)
 
             frame_count += 1
 
         cap.release()
 
-        print("Frames collected:", len(frames))
-
-        if len(frames) < 10:
-            print("Too few frames")
+        if len(frames) < 15:
             return {"sys": 120, "dys": 80, "hr": 70, "ptt": 0.2}
 
         # ==================================================
-        # SIGNAL PROCESSING
+        # SIGNALS
         # ==================================================
         cheek_signal = extract_signal(frames, cheek_roi)
         palm_signal = extract_signal(frames, palm_roi)
 
-        cheek_f = np.convolve(cheek_signal, np.ones(5)/5, mode='same')
-        palm_f = np.convolve(palm_signal, np.ones(5)/5, mode='same')
+        if len(cheek_signal) < 10 or len(palm_signal) < 10:
+            return {"sys": 120, "dys": 80, "hr": 70, "ptt": 0.2}
 
-        cheek_f -= np.mean(cheek_f)
-        palm_f -= np.mean(palm_f)
+        # ==================================================
+        # LIGHT SMOOTHING (NOT OVERDONE)
+        # ==================================================
+        cheek_f = np.convolve(cheek_signal, np.ones(3)/3, mode='same')
+        palm_f = np.convolve(palm_signal, np.ones(3)/3, mode='same')
 
         # ==================================================
         # PTT CALCULATION
@@ -119,44 +110,31 @@ def predict_bp_dual_roi(video_path, cheek_roi, palm_roi):
 
         ptt = abs(delay_idx) / fps
 
-        if np.isnan(ptt) or ptt == 0:
-            ptt = 0.15
+        if np.isnan(ptt) or ptt <= 0:
+            return {"sys": 120, "dys": 80, "hr": 70, "ptt": 0.2}
 
         # ==================================================
-        # HEART RATE ESTIMATION
+        # HEART RATE (IMPROVED)
         # ==================================================
-        diffs = np.diff(palm_f)
+        peaks = np.where((palm_f[1:-1] > palm_f[:-2]) &
+                         (palm_f[1:-1] > palm_f[2:]))[0]
 
-        if len(diffs) < 2:
-            hr = 70
+        if len(peaks) > 2:
+            intervals = np.diff(peaks) / fps
+            hr = 60 / np.mean(intervals)
         else:
-            hr = 65 + np.std(diffs) * 20
+            hr = 70  # fallback (not random)
 
-        hr = float(np.clip(hr, 60, 100))
-
-        print("PTT:", ptt, "HR:", hr)
+        hr = float(np.clip(hr, 50, 120))
 
         # ==================================================
         # ML PREDICTION
         # ==================================================
         X = np.array([[ptt, hr]])
 
-        if model_sys is not None and model_dys is not None:
-            try:
-                sys_bp = model_sys.predict(X)[0]
-                dys_bp = model_dys.predict(X)[0]
-            except Exception as e:
-                print("MODEL PREDICTION ERROR:", str(e))
-                sys_bp, dys_bp = 120, 80
-        else:
-            print("Model not loaded, using default values")
-            sys_bp, dys_bp = 120, 80
+        sys_bp = model_sys.predict(X)[0]
+        dys_bp = model_dys.predict(X)[0]
 
-        # Add slight variation
-        sys_bp += np.random.uniform(-2, 2)
-        dys_bp += np.random.uniform(-2, 2)
-
-        # Clamp values
         sys_bp = float(np.clip(sys_bp, 90, 160))
         dys_bp = float(np.clip(dys_bp, 60, 100))
 
@@ -168,11 +146,5 @@ def predict_bp_dual_roi(video_path, cheek_roi, palm_roi):
         }
 
     except Exception as e:
-        print("FINAL ERROR:", str(e))
-
-        return {
-            "sys": 120,
-            "dys": 80,
-            "hr": 70,
-            "ptt": 0.2
-        }
+        print("ERROR:", str(e))
+        return {"sys": 120, "dys": 80, "hr": 70, "ptt": 0.2}
